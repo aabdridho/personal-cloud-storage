@@ -1,16 +1,36 @@
-import shutil
-from datetime import datetime, timezone
+import os
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent
-STORAGE_DIR = BASE_DIR / "storage"
-STORAGE_DIR.mkdir(exist_ok=True)
+load_dotenv(BASE_DIR / ".env")
 
-app = FastAPI(title="Personal Cloud Storage", version="0.1.0")
+S3_BUCKET = os.environ["S3_BUCKET"]
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=os.environ["S3_ENDPOINT"],
+    aws_access_key_id=os.environ["S3_ACCESS_KEY"],
+    aws_secret_access_key=os.environ["S3_SECRET_KEY"],
+    region_name="us-east-1",
+    config=Config(
+        signature_version="s3v4",
+        s3={"addressing_style": "path"},
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+    ),
+)
+
+app = FastAPI(title="Personal Cloud Storage", version="0.2.0")
 
 
 class FileInfo(BaseModel):
@@ -19,25 +39,41 @@ class FileInfo(BaseModel):
     uploaded_at: datetime
 
 
-def to_file_info(path: Path) -> FileInfo:
-    stat = path.stat()
-    return FileInfo(
-        filename=path.name,
-        size=stat.st_size,
-        uploaded_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-    )
-
-
-def get_file_path(filename: str) -> Path:
-    path = (STORAGE_DIR / filename).resolve()
-    if path.parent != STORAGE_DIR:
+def validate_key(filename: str) -> str:
+    if filename in ("", ".", "..") or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Nama file tidak valid")
-    if not path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail=f"File '{filename}' tidak ditemukan",
-        )
-    return path
+    return filename
+
+
+def is_not_found(error: ClientError) -> bool:
+    return error.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound")
+
+
+def object_exists(key: str) -> bool:
+    try:
+        s3.head_object(Bucket=S3_BUCKET, Key=key)
+        return True
+    except ClientError as error:
+        if is_not_found(error):
+            return False
+        raise
+
+
+def get_object_info(key: str) -> FileInfo:
+    try:
+        head = s3.head_object(Bucket=S3_BUCKET, Key=key)
+    except ClientError as error:
+        if is_not_found(error):
+            raise HTTPException(
+                status_code=404,
+                detail=f"File '{key}' tidak ditemukan",
+            )
+        raise
+    return FileInfo(
+        filename=key,
+        size=head["ContentLength"],
+        uploaded_at=head["LastModified"],
+    )
 
 
 @app.get("/health")
@@ -47,39 +83,62 @@ def health_check():
 
 @app.post("/files", response_model=FileInfo, status_code=status.HTTP_201_CREATED)
 def upload_file(file: UploadFile = File(...)):
-    safe_name = Path(file.filename or "").name
-    if safe_name in ("", ".", ".."):
-        raise HTTPException(status_code=400, detail="Nama file tidak valid")
+    key = validate_key(Path(file.filename or "").name)
 
-    destination = STORAGE_DIR / safe_name
-    if destination.exists():
-        raise HTTPException(
-            status_code=409,
-            detail=f"File '{safe_name}' sudah ada",
-        )
+    if object_exists(key):
+        raise HTTPException(status_code=409, detail=f"File '{key}' sudah ada")
 
-    with destination.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    return to_file_info(destination)
+    s3.upload_fileobj(
+        file.file,
+        S3_BUCKET,
+        key,
+        ExtraArgs={"ContentType": file.content_type or "application/octet-stream"},
+    )
+    return get_object_info(key)
 
 
 @app.get("/files", response_model=list[FileInfo])
 def list_files():
-    return [
-        to_file_info(path)
-        for path in sorted(STORAGE_DIR.iterdir())
-        if path.is_file()
-    ]
+    files = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=S3_BUCKET):
+        for obj in page.get("Contents", []):
+            files.append(
+                FileInfo(
+                    filename=obj["Key"],
+                    size=obj["Size"],
+                    uploaded_at=obj["LastModified"],
+                )
+            )
+    return files
 
 
 @app.get("/files/{filename}")
 def download_file(filename: str):
-    path = get_file_path(filename)
-    return FileResponse(path, filename=path.name)
+    key = validate_key(filename)
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
+    except ClientError as error:
+        if is_not_found(error):
+            raise HTTPException(
+                status_code=404,
+                detail=f"File '{key}' tidak ditemukan",
+            )
+        raise
+
+    return StreamingResponse(
+        obj["Body"].iter_chunks(chunk_size=1024 * 1024),
+        media_type=obj.get("ContentType", "application/octet-stream"),
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(key)}",
+            "Content-Length": str(obj["ContentLength"]),
+        },
+    )
 
 
 @app.delete("/files/{filename}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_file(filename: str):
-    path = get_file_path(filename)
-    path.unlink()
+    key = validate_key(filename)
+    if not object_exists(key):
+        raise HTTPException(status_code=404, detail=f"File '{key}' tidak ditemukan")
+    s3.delete_object(Bucket=S3_BUCKET, Key=key)
