@@ -10,11 +10,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config import S3_BUCKET
-from database import Base, engine, get_db
+from database import get_db
 from models import FileRecord
 from storage import create_download_url, s3
-
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Personal Cloud Storage", version="0.3.0")
 
@@ -31,7 +29,9 @@ class FileInfo(BaseModel):
     @field_validator("uploaded_at")
     @classmethod
     def ensure_utc(cls, value: datetime) -> datetime:
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 class ShareLink(BaseModel):
