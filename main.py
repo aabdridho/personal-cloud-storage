@@ -1,103 +1,62 @@
-import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote
 
-import boto3
-from botocore.config import Config
-from botocore.exceptions import ClientError
-from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+from config import S3_BUCKET
+from database import Base, engine, get_db
+from models import FileRecord
+from storage import create_download_url, s3
 
-S3_BUCKET = os.environ["S3_BUCKET"]
+Base.metadata.create_all(bind=engine)
 
-s3 = boto3.client(
-    "s3",
-    endpoint_url=os.environ["S3_ENDPOINT"],
-    aws_access_key_id=os.environ["S3_ACCESS_KEY"],
-    aws_secret_access_key=os.environ["S3_SECRET_KEY"],
-    region_name="us-east-1",
-    config=Config(
-        signature_version="s3v4",
-        s3={"addressing_style": "path"},
-        request_checksum_calculation="when_required",
-        response_checksum_validation="when_required",
-    ),
-)
-
-app = FastAPI(title="Personal Cloud Storage", version="0.2.1")
+app = FastAPI(title="Personal Cloud Storage", version="0.3.0")
 
 
 class FileInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
     filename: str
     size: int
+    content_type: str
     uploaded_at: datetime
+
+    @field_validator("uploaded_at")
+    @classmethod
+    def ensure_utc(cls, value: datetime) -> datetime:
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 class ShareLink(BaseModel):
+    id: int
     filename: str
     url: str
     expires_in: int
     expires_at: datetime
 
 
-def validate_key(filename: str) -> str:
-    if filename in ("", ".", "..") or "/" in filename or "\\" in filename:
+def clean_filename(raw: str | None) -> str:
+    name = Path(raw or "").name
+    if name in ("", ".", "..") or len(name) > 255:
         raise HTTPException(status_code=400, detail="Nama file tidak valid")
-    return filename
+    return name
 
 
-def is_not_found(error: ClientError) -> bool:
-    return error.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound")
-
-
-def object_exists(key: str) -> bool:
-    try:
-        s3.head_object(Bucket=S3_BUCKET, Key=key)
-        return True
-    except ClientError as error:
-        if is_not_found(error):
-            return False
-        raise
-
-
-def ensure_object_exists(key: str) -> None:
-    if not object_exists(key):
-        raise HTTPException(status_code=404, detail=f"File '{key}' tidak ditemukan")
-
-
-def get_object_info(key: str) -> FileInfo:
-    try:
-        head = s3.head_object(Bucket=S3_BUCKET, Key=key)
-    except ClientError as error:
-        if is_not_found(error):
-            raise HTTPException(
-                status_code=404,
-                detail=f"File '{key}' tidak ditemukan",
-            )
-        raise
-    return FileInfo(
-        filename=key,
-        size=head["ContentLength"],
-        uploaded_at=head["LastModified"],
-    )
-
-
-def create_download_url(key: str, expires: int) -> str:
-    return s3.generate_presigned_url(
-        "get_object",
-        Params={
-            "Bucket": S3_BUCKET,
-            "Key": key,
-            "ResponseContentDisposition": f"attachment; filename*=UTF-8''{quote(key)}",
-        },
-        ExpiresIn=expires,
-    )
+def get_file_or_404(db: Session, file_id: int) -> FileRecord:
+    record = db.get(FileRecord, file_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"File dengan id {file_id} tidak ditemukan",
+        )
+    return record
 
 
 @app.get("/health")
@@ -106,64 +65,80 @@ def health_check():
 
 
 @app.post("/files", response_model=FileInfo, status_code=status.HTTP_201_CREATED)
-def upload_file(file: UploadFile = File(...)):
-    key = validate_key(Path(file.filename or "").name)
+def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    filename = clean_filename(file.filename)
 
-    if object_exists(key):
-        raise HTTPException(status_code=409, detail=f"File '{key}' sudah ada")
+    if db.scalar(select(FileRecord).where(FileRecord.filename == filename)):
+        raise HTTPException(status_code=409, detail=f"File '{filename}' sudah ada")
+
+    object_key = uuid.uuid4().hex
+    content_type = file.content_type or "application/octet-stream"
 
     s3.upload_fileobj(
         file.file,
         S3_BUCKET,
-        key,
-        ExtraArgs={"ContentType": file.content_type or "application/octet-stream"},
+        object_key,
+        ExtraArgs={"ContentType": content_type},
     )
-    return get_object_info(key)
+    head = s3.head_object(Bucket=S3_BUCKET, Key=object_key)
+
+    record = FileRecord(
+        filename=filename,
+        object_key=object_key,
+        size=head["ContentLength"],
+        content_type=content_type,
+        etag=head["ETag"].strip('"'),
+    )
+    db.add(record)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        s3.delete_object(Bucket=S3_BUCKET, Key=object_key)
+        raise HTTPException(status_code=409, detail=f"File '{filename}' sudah ada")
+
+    db.refresh(record)
+    return record
 
 
 @app.get("/files", response_model=list[FileInfo])
-def list_files():
-    files = []
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=S3_BUCKET):
-        for obj in page.get("Contents", []):
-            files.append(
-                FileInfo(
-                    filename=obj["Key"],
-                    size=obj["Size"],
-                    uploaded_at=obj["LastModified"],
-                )
-            )
-    return files
+def list_files(db: Session = Depends(get_db)):
+    return db.scalars(
+        select(FileRecord).order_by(FileRecord.uploaded_at.desc())
+    ).all()
 
 
-@app.get("/files/{filename}/link", response_model=ShareLink)
+@app.get("/files/{file_id}/link", response_model=ShareLink)
 def create_share_link(
-    filename: str,
+    file_id: int,
     expires: int = Query(default=3600, ge=60, le=604800),
+    db: Session = Depends(get_db),
 ):
-    key = validate_key(filename)
-    ensure_object_exists(key)
+    record = get_file_or_404(db, file_id)
     return ShareLink(
-        filename=key,
-        url=create_download_url(key, expires),
+        id=record.id,
+        filename=record.filename,
+        url=create_download_url(record.object_key, record.filename, expires),
         expires_in=expires,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires),
     )
 
 
-@app.get("/files/{filename}")
-def download_file(filename: str):
-    key = validate_key(filename)
-    ensure_object_exists(key)
+@app.get("/files/{file_id}")
+def download_file(file_id: int, db: Session = Depends(get_db)):
+    record = get_file_or_404(db, file_id)
     return RedirectResponse(
-        create_download_url(key, expires=300),
+        create_download_url(record.object_key, record.filename, expires=300),
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     )
 
 
-@app.delete("/files/{filename}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_file(filename: str):
-    key = validate_key(filename)
-    ensure_object_exists(key)
-    s3.delete_object(Bucket=S3_BUCKET, Key=key)
+@app.delete("/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_file(file_id: int, db: Session = Depends(get_db)):
+    record = get_file_or_404(db, file_id)
+    object_key = record.object_key
+
+    db.delete(record)
+    db.commit()
+
+    s3.delete_object(Bucket=S3_BUCKET, Key=object_key)

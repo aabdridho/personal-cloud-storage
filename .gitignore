@@ -13,3 +13,6 @@ storage/
 
 # Lock file Microsoft Office
 ~$*
+
+# Database lokal
+*.db
