@@ -10,3 +10,6 @@ storage/
 
 # Secret / konfigurasi rahasia
 .env
+
+# Lock file Microsoft Office
+~$*
