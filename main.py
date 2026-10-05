@@ -1,8 +1,58 @@
-from fastapi import FastAPI
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
 
-app = FastAPI(title="Personal Cloud Storage")
+from fastapi import FastAPI, File, HTTPException, UploadFile, status
+from pydantic import BaseModel
+
+BASE_DIR = Path(__file__).resolve().parent
+STORAGE_DIR = BASE_DIR / "storage"
+STORAGE_DIR.mkdir(exist_ok=True)
+
+app = FastAPI(title="Personal Cloud Storage", version="0.1.0")
+
+
+class FileInfo(BaseModel):
+    filename: str
+    size: int
+    uploaded_at: datetime
+
+
+def to_file_info(path: Path) -> FileInfo:
+    stat = path.stat()
+    return FileInfo(
+        filename=path.name,
+        size=stat.st_size,
+        uploaded_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+    )
 
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.post("/files", response_model=FileInfo, status_code=status.HTTP_201_CREATED)
+def upload_file(file: UploadFile = File(...)):
+    safe_name = Path(file.filename or "").name
+    if safe_name in ("", ".", ".."):
+        raise HTTPException(status_code=400, detail="Nama file tidak valid")
+
+    destination = STORAGE_DIR / safe_name
+    if destination.exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"File '{safe_name}' sudah ada",
+        )
+
+    with destination.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    return to_file_info(destination)
+
+@app.get("/files", response_model=list[FileInfo])
+def list_files():
+    return [
+        to_file_info(path)
+        for path in sorted(STORAGE_DIR.iterdir())
+        if path.is_file()
+    ]
