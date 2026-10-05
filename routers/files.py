@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -12,7 +12,8 @@ from auth import get_current_user
 from config import MAX_UPLOAD_MB, S3_BUCKET
 from database import get_db
 from models import FileRecord, User
-from schemas import FileInfo, FileRename, ShareLink
+from permissions import get_accessible_folder_or_404, get_own_file, get_readable_file_or_404
+from schemas import FileInfo, FileUpdate, ShareLink
 from services import get_storage_usage
 from storage import create_download_url, s3
 
@@ -37,32 +38,20 @@ def get_upload_size(file: UploadFile) -> int:
     return size
 
 
-def get_own_file_or_404(db: Session, file_id: int, user: User) -> FileRecord:
-    record = db.scalar(
-        select(FileRecord).where(
-            FileRecord.id == file_id,
-            FileRecord.owner_id == user.id,
-        )
-    )
-    if record is None:
-        raise HTTPException(status_code=404, detail=f"File dengan id {file_id} tidak ditemukan")
-    return record
-
-
 @router.post("", response_model=FileInfo, status_code=status.HTTP_201_CREATED)
 def upload_file(
     file: UploadFile = File(...),
+    folder_id: int | None = Form(default=None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     filename = clean_filename(file.filename)
+    if folder_id is not None:
+        get_accessible_folder_or_404(db, folder_id, user)
 
     size = get_upload_size(file)
     if size > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Ukuran file melebihi batas {MAX_UPLOAD_MB} MB",
-        )
+        raise HTTPException(status_code=413, detail=f"Ukuran file melebihi batas {MAX_UPLOAD_MB} MB")
 
     used, _ = get_storage_usage(db, user.id)
     if used + size > user.quota_bytes:
@@ -93,6 +82,7 @@ def upload_file(
 
     record = FileRecord(
         owner_id=user.id,
+        folder_id=folder_id,
         filename=filename,
         object_key=object_key,
         size=head["ContentLength"],
@@ -113,6 +103,7 @@ def upload_file(
 
 @router.get("", response_model=list[FileInfo])
 def list_files(
+    folder_id: int | None = Query(default=None),
     q: str | None = Query(default=None, max_length=100),
     content_type: str | None = Query(default=None, max_length=100),
     limit: int = Query(default=50, ge=1, le=200),
@@ -120,7 +111,12 @@ def list_files(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    query = select(FileRecord).where(FileRecord.owner_id == user.id)
+    if folder_id is None:
+        query = select(FileRecord).where(FileRecord.owner_id == user.id)
+    else:
+        get_accessible_folder_or_404(db, folder_id, user)
+        query = select(FileRecord).where(FileRecord.folder_id == folder_id)
+
     if q:
         query = query.where(FileRecord.filename.icontains(q, autoescape=True))
     if content_type:
@@ -135,23 +131,30 @@ def list_files(
 
 
 @router.patch("/{file_id}", response_model=FileInfo)
-def rename_file(
+def update_file(
     file_id: int,
-    data: FileRename,
+    data: FileUpdate,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    record = get_own_file_or_404(db, file_id, user)
-    new_name = clean_filename(data.filename)
-    if new_name == record.filename:
-        return record
+    record = get_own_file(db, file_id, user)
+    fields = data.model_fields_set
 
-    record.filename = new_name
+    if "filename" in fields:
+        if data.filename is None:
+            raise HTTPException(status_code=400, detail="filename tidak boleh null")
+        record.filename = clean_filename(data.filename)
+
+    if "folder_id" in fields:
+        if data.folder_id is not None:
+            get_accessible_folder_or_404(db, data.folder_id, user)
+        record.folder_id = data.folder_id
+
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"File '{new_name}' sudah ada")
+        raise HTTPException(status_code=409, detail=f"File '{record.filename}' sudah ada")
 
     db.refresh(record)
     return record
@@ -164,7 +167,7 @@ def create_share_link(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    record = get_own_file_or_404(db, file_id, user)
+    record = get_readable_file_or_404(db, file_id, user)
     return ShareLink(
         id=record.id,
         filename=record.filename,
@@ -180,7 +183,7 @@ def download_file(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    record = get_own_file_or_404(db, file_id, user)
+    record = get_readable_file_or_404(db, file_id, user)
     return RedirectResponse(
         create_download_url(record.object_key, record.filename, expires=300),
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
@@ -193,7 +196,7 @@ def delete_file(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    record = get_own_file_or_404(db, file_id, user)
+    record = get_own_file(db, file_id, user)
     object_key = record.object_key
 
     db.delete(record)

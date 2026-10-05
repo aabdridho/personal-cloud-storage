@@ -1,11 +1,12 @@
 from fastapi import FastAPI
 
-from routers import files, login, users
+from routers import files, folders, login, users
 
-app = FastAPI(title="Personal Cloud Storage", version="0.5.0")
+app = FastAPI(title="Personal Cloud Storage", version="0.6.0")
 
 app.include_router(login.router)
 app.include_router(users.router)
+app.include_router(folders.router)
 app.include_router(files.router)
 
 

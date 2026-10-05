@@ -29,6 +29,19 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class Folder(Base):
+    __tablename__ = "folders"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", name="uq_folders_owner_name"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class FileRecord(Base):
     __tablename__ = "files"
     __table_args__ = (
@@ -37,6 +50,7 @@ class FileRecord(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    folder_id: Mapped[int | None] = mapped_column(ForeignKey("folders.id"), index=True)
     filename: Mapped[str] = mapped_column(String(255))
     object_key: Mapped[str] = mapped_column(String(64), unique=True)
     size: Mapped[int] = mapped_column(BigInteger)
