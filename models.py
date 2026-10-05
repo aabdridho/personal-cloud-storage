@@ -3,7 +3,10 @@ from datetime import datetime, timezone
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from config import DEFAULT_QUOTA_GB
 from database import Base
+
+DEFAULT_QUOTA_BYTES = DEFAULT_QUOTA_GB * 1024**3
 
 
 def utc_now() -> datetime:
@@ -18,6 +21,11 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    quota_bytes: Mapped[int] = mapped_column(
+        BigInteger,
+        default=DEFAULT_QUOTA_BYTES,
+        server_default=str(DEFAULT_QUOTA_BYTES),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
