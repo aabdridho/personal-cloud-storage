@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,9 +28,22 @@ def to_file_info(path: Path) -> FileInfo:
     )
 
 
+def get_file_path(filename: str) -> Path:
+    path = (STORAGE_DIR / filename).resolve()
+    if path.parent != STORAGE_DIR:
+        raise HTTPException(status_code=400, detail="Nama file tidak valid")
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"File '{filename}' tidak ditemukan",
+        )
+    return path
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
 
 @app.post("/files", response_model=FileInfo, status_code=status.HTTP_201_CREATED)
 def upload_file(file: UploadFile = File(...)):
@@ -49,6 +63,7 @@ def upload_file(file: UploadFile = File(...)):
 
     return to_file_info(destination)
 
+
 @app.get("/files", response_model=list[FileInfo])
 def list_files():
     return [
@@ -56,3 +71,15 @@ def list_files():
         for path in sorted(STORAGE_DIR.iterdir())
         if path.is_file()
     ]
+
+
+@app.get("/files/{filename}")
+def download_file(filename: str):
+    path = get_file_path(filename)
+    return FileResponse(path, filename=path.name)
+
+
+@app.delete("/files/{filename}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_file(filename: str):
+    path = get_file_path(filename)
+    path.unlink()
