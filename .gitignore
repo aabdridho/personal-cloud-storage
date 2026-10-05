@@ -16,3 +16,6 @@ storage/
 
 # Database lokal
 *.db
+
+# Sertifikat & private key
+nginx/certs/
