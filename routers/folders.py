@@ -24,7 +24,7 @@ def create_folder(
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"Folder '{data.name}' sudah ada")
+        raise HTTPException(status_code=409, detail=f"Folder '{data.name}' sudah ada") from None
     db.refresh(folder)
     return folder
 
@@ -70,7 +70,7 @@ def update_folder(
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"Folder '{data.name}' sudah ada")
+        raise HTTPException(status_code=409, detail=f"Folder '{data.name}' sudah ada") from None
 
     db.refresh(folder)
     return folder

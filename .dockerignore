@@ -9,3 +9,9 @@ storage/
 *.docx
 ~$*
 nginx/
+tests/
+scripts/
+docs/
+.github/
+.pytest_cache/
+.ruff_cache/

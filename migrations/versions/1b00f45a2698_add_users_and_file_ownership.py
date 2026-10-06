@@ -35,7 +35,7 @@ def upgrade() -> None:
     op.drop_index(op.f('ix_files_filename'), table_name='files')
     op.create_index(op.f('ix_files_owner_id'), 'files', ['owner_id'], unique=False)
     op.create_unique_constraint('uq_files_owner_filename', 'files', ['owner_id', 'filename'])
-    op.create_foreign_key(None, 'files', 'users', ['owner_id'], ['id'])
+    op.create_foreign_key('files_owner_id_fkey', 'files', 'users', ['owner_id'], ['id'])
     # ### end Alembic commands ###
 
 
@@ -45,7 +45,7 @@ def downgrade() -> None:
     # WARNING: constraint name is None; this directive will fail as
     # rendered.  Add a name, or use a naming convention; see
     # https://alembic.sqlalchemy.org/en/latest/naming.html
-    op.drop_constraint(None, 'files', type_='foreignkey')
+    op.drop_constraint('files_owner_id_fkey', 'files', type_='foreignkey')
     op.drop_constraint('uq_files_owner_filename', 'files', type_='unique')
     op.drop_index(op.f('ix_files_owner_id'), table_name='files')
     op.create_index(op.f('ix_files_filename'), 'files', ['filename'], unique=True)

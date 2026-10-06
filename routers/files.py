@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -67,7 +67,7 @@ def upload_file(
         )
     )
     if duplicate:
-        raise HTTPException(status_code=409, detail=f"File '{filename}' sudah ada")
+        raise HTTPException(status_code=409, detail=f"File '{filename}' sudah ada") from None
 
     object_key = uuid.uuid4().hex
     content_type = file.content_type or "application/octet-stream"
@@ -95,7 +95,7 @@ def upload_file(
     except IntegrityError:
         db.rollback()
         s3.delete_object(Bucket=S3_BUCKET, Key=object_key)
-        raise HTTPException(status_code=409, detail=f"File '{filename}' sudah ada")
+        raise HTTPException(status_code=409, detail=f"File '{filename}' sudah ada") from None
 
     db.refresh(record)
     return record
@@ -154,7 +154,7 @@ def update_file(
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"File '{record.filename}' sudah ada")
+        raise HTTPException(status_code=409, detail=f"File '{record.filename}' sudah ada") from None
 
     db.refresh(record)
     return record
@@ -173,7 +173,7 @@ def create_share_link(
         filename=record.filename,
         url=create_download_url(record.object_key, record.filename, expires),
         expires_in=expires,
-        expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires),
+        expires_at=datetime.now(UTC) + timedelta(seconds=expires),
     )
 
 

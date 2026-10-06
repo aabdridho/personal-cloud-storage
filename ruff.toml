@@ -1,0 +1,10 @@
+target-version = "py312"
+line-length = 100
+extend-exclude = ["migrations"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "B008",  # Depends()/File()/Query() di default argumen adalah pola standar FastAPI
+    "E501",  # panjang baris dicek oleh reviewer, bukan oleh linter
+]

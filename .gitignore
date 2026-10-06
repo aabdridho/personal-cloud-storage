@@ -19,3 +19,7 @@ storage/
 
 # Sertifikat & private key
 nginx/certs/
+
+# Cache tool development
+.pytest_cache/
+.ruff_cache/
