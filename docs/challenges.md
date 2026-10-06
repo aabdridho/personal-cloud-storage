@@ -60,6 +60,9 @@ After Nginx put API and storage on one origin, `curl -L` (and browsers) kept the
 **15. Where an upload is rejected matters.**
 The API's `413` arrived only after `HTTP/1.1 100 Continue` and the full 2 MB body; Nginx's `413` arrived with no `100 Continue` and `Connection: close`. Limits belong at the edge, with the application check kept for quotas the proxy cannot know about.
 
+**17. "Healthy" is not the same as "ready".**
+The first run of the monitoring check failed at the Grafana data source step with an empty body. Grafana's `/api/health` already answered `200`, but its log showed `404 ... plugin not registered` for the data source health call: bundled plugins were still loading, and Grafana was also downloading a plugin update in the background. Run by hand a few seconds later, the same call returned `OK`. The check now retries that call, and `GF_PLUGINS_PREINSTALL_DISABLED` stops Grafana from downloading plugins at start-up.
+
 ## Process
 
 **16. Secrets shared too early.**

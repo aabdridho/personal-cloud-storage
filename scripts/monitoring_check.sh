@@ -60,9 +60,19 @@ for attempt in $(seq 1 30); do
   [ "$attempt" -eq 30 ] && { echo "Grafana tidak sehat" >&2; exit 1; }
   sleep 2
 done
-curl -sf -u "admin:${GRAFANA_PASSWORD}" "${GRAFANA}/api/datasources/uid/prometheus/health" \
-  | python3 -c 'import json, sys; sys.exit(json.load(sys.stdin).get("status") != "OK")' \
-  || { echo "Datasource Prometheus gagal" >&2; exit 1; }
+# /api/health answers before the bundled plugins finish loading, so a health
+# check right after start can get 404 "plugin not registered". Retry.
+for attempt in $(seq 1 30); do
+  body=$(curl -s -u "admin:${GRAFANA_PASSWORD}" "${GRAFANA}/api/datasources/uid/prometheus/health" || true)
+  if echo "$body" | python3 -c 'import json, sys; sys.exit(json.load(sys.stdin).get("status") != "OK")' 2>/dev/null; then
+    break
+  fi
+  if [ "$attempt" -eq 30 ]; then
+    echo "Datasource Prometheus gagal: ${body}" >&2
+    exit 1
+  fi
+  sleep 2
+done
 curl -sf -u "admin:${GRAFANA_PASSWORD}" "${GRAFANA}/api/dashboards/uid/pcs-overview" > /dev/null \
   || { echo "Dashboard tidak ter-provision" >&2; exit 1; }
 echo "Datasource OK, dashboard 'Personal Cloud Storage' ada"
