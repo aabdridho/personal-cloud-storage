@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user
 from database import get_db
+from metrics import LOGINS
 from models import User
 from schemas import StorageUsage, Token, UserInfo
 from security import DUMMY_HASH, create_access_token, verify_password
@@ -26,11 +27,13 @@ def login(
         valid = verify_password(form.password, user.password_hash)
 
     if not valid or not user.is_active:
+        LOGINS.labels("failure").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Username atau password salah",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    LOGINS.labels("success").inc()
     return Token(access_token=create_access_token(user.id))
 
 

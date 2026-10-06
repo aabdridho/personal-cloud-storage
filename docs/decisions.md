@@ -76,6 +76,12 @@ Short records of the decisions that shaped the project: the context, what was ch
 **Decision.** GitHub Actions runs lint and API tests (SQLite and PostgreSQL), then a smoke test on the real Compose stack including a migration roundtrip, then publishes the image to GHCR as `latest` and `sha-<commit>` from `main` only, with least-privilege tokens and throwaway secrets.
 **Consequence.** Every change is verified end-to-end before an image exists, and deployments can pin and roll back exact builds. CI time is a few minutes per push.
 
+## ADR-014: Prometheus pull model, metrics computed from the database at scrape time
+
+**Context.** Logs alone could not answer "is it up, is it slow, who is close to their quota, is the disk filling up". The monitoring stack had to run on the same small home server.
+**Decision.** Prometheus scrapes the API, postgres-exporter and Silo's built-in endpoint; Grafana shows one provisioned dashboard. Event counters (uploads, logins, downloads) live in process memory, while totals (files, bytes, per-user usage) are computed by a custom collector that queries PostgreSQL on each scrape instead of being kept in memory. `/metrics` is reachable only inside the Docker network; Prometheus and Grafana bind to `127.0.0.1`. Dashboards, data sources and alert rules are files in Git, with `promtool` unit tests. No Alertmanager yet: alerts are visible in Prometheus and Grafana.
+**Consequence.** Totals stay correct across restarts and need no bookkeeping in the request path; a scrape costs four small queries every 15 s. Counters reset on restart, which `rate()`/`increase()` handle. Monitoring is reproducible from the repository. Usernames appear as label values, which is acceptable for a handful of family accounts but would not scale to thousands of users.
+
 ## ADR-013: Home server with Cloudflare Tunnel, not a cloud VM (planned)
 
 **Context.** Vercel's serverless model has no persistent disk and a 4.5 MB request limit. A free cloud VM has 1 GB RAM and paid egress, which family photo and video traffic would exceed.

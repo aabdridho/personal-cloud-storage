@@ -1,10 +1,10 @@
 # Catatan Belajar & Persiapan Interview
 
-Rangkuman pribadi Phase 1–8: konsep yang dipelajari per phase, cara menjelaskannya ke interviewer, dan jawaban Knowledge Check.
+Rangkuman pribadi Phase 1–9: konsep yang dipelajari per phase, cara menjelaskannya ke interviewer, dan jawaban Knowledge Check.
 
 ## Cerita project dalam 60 detik
 
-> "Saya membangun cloud storage pribadi untuk keluarga, mirip Google Drive, secara bertahap. Mulai dari FastAPI yang menyimpan file di folder lokal, lalu saya pindahkan ke object storage lewat S3 API, metadata ke PostgreSQL dengan migration Alembic, menambah autentikasi JWT dengan isolasi data per user, kuota, folder bersama, lalu membungkus semuanya dengan Docker Compose di belakang Nginx dengan HTTPS. Setiap push dicek otomatis oleh GitHub Actions: lint, test di SQLite dan PostgreSQL, smoke test seluruh stack, lalu image dipublish ke GHCR. Tiap phase menyelesaikan masalah yang muncul di phase sebelumnya, jadi saya bisa menjelaskan *kenapa* setiap teknologi dipakai."
+> "Saya membangun cloud storage pribadi untuk keluarga, mirip Google Drive, secara bertahap. Mulai dari FastAPI yang menyimpan file di folder lokal, lalu saya pindahkan ke object storage lewat S3 API, metadata ke PostgreSQL dengan migration Alembic, menambah autentikasi JWT dengan isolasi data per user, kuota, folder bersama, lalu membungkus semuanya dengan Docker Compose di belakang Nginx dengan HTTPS. Setiap push dicek otomatis oleh GitHub Actions: lint, test di SQLite dan PostgreSQL, smoke test seluruh stack, lalu image dipublish ke GHCR. Kesehatannya dipantau Prometheus dan Grafana, lengkap dengan alert kalau disk hampir penuh atau ada percobaan tebak password. Tiap phase menyelesaikan masalah yang muncul di phase sebelumnya, jadi saya bisa menjelaskan *kenapa* setiap teknologi dipakai."
 
 ## Ringkasan per phase
 
@@ -65,6 +65,17 @@ Rangkuman pribadi Phase 1–8: konsep yang dipelajari per phase, cara menjelaska
 - Token pipeline least-privilege. Secret smoke test dibuat acak per run.
 - Image bertag commit SHA supaya bisa deploy versi persis dan rollback.
 
+### Phase 9: Monitoring
+- Monitoring menjawab "apakah jalan, apakah lambat, apakah hampir penuh" *sebelum* keluarga mengeluh. Log menjawab "kenapa".
+- Prometheus memakai model **pull**: dia yang datang mengambil `/metrics` tiap 15 detik. Kalau target nggak bisa diambil, `up == 0` (itu sendiri sudah sinyal).
+- Tipe metrik: **counter** cuma naik (upload, login) dan dibaca dengan `rate()`/`increase()`; **gauge** bisa naik turun (jumlah file, byte terpakai); **histogram** untuk latency (p95 lewat `histogram_quantile`).
+- Total dihitung dari database saat scrape (custom collector), jadi tetap benar setelah restart. Counter di memori boleh reset, `rate()` mengerti reset.
+- Label = dimensi (`result="success"`). Jangan pakai label yang nilainya tak terbatas (ID file, path asli) → cardinality meledak. Route di-label pakai template `/files/{file_id}`, bukan `/files/123`.
+- `/metrics` nggak punya autentikasi → diblok di Nginx (`404`), cuma bisa dibaca dari dalam Docker network.
+- Grafana di-*provision* dari file: dashboard dan datasource ada di Git, bisa dibuat ulang persis.
+- Alert diuji dengan `promtool test rules` memakai data sintetis, sama seperti unit test untuk kode.
+- `for: 2m` mencegah alert berbunyi karena gangguan sesaat (flapping).
+
 ## Jawaban Knowledge Check
 
 **Tutorial 1**
@@ -120,6 +131,15 @@ Rangkuman pribadi Phase 1–8: konsep yang dipelajari per phase, cara menjelaska
 4. *`needs` dan publish di `main`?* Fail fast. PR belum direview jadi nggak boleh menghasilkan image.
 5. *Kenapa tag SHA?* Deploy versi persis dan rollback.
 
+**Tutorial 15 (Monitoring)**
+1. *Pull vs push?* Prometheus menarik data dari target. Target mati langsung terlihat lewat `up == 0`, dan target nggak perlu tahu alamat Prometheus.
+2. *Counter vs gauge?* Counter cuma naik (jumlah upload sejak start), gauge nilai saat ini (byte terpakai).
+3. *Kenapa `rate()` dan bukan nilai counter mentah?* Nilai mentah bergantung kapan proses terakhir restart. `rate()` memberi laju per detik dan menangani reset.
+4. *Kenapa p95, bukan rata-rata?* Rata-rata menyembunyikan request lambat yang dialami sebagian user.
+5. *Kenapa `/metrics` diblok?* Berisi username dan pemakaian storage, tanpa autentikasi.
+6. *Kenapa total file dihitung dari DB, bukan counter?* Counter hilang saat restart; DB adalah source of truth.
+7. *Apa itu cardinality?* Jumlah kombinasi label unik. Tiap kombinasi = satu time series di memori Prometheus.
+
 ## Pertanyaan interview yang mungkin muncul
 
 - *Bagaimana kamu menjaga konsistensi antara database dan object storage?* Lihat ADR-003 dan Challenges #12.
@@ -127,4 +147,5 @@ Rangkuman pribadi Phase 1–8: konsep yang dipelajari per phase, cara menjelaska
 - *Bagaimana kamu memastikan migration aman?* Named constraints, `server_default`, roundtrip + `alembic check` di CI.
 - *Kenapa nggak langsung pakai cloud?* ADR-013: egress, RAM, biaya untuk penggunaan keluarga.
 - *Ceritakan bug tersulit.* Challenges #13 (dua metode autentikasi) atau #14 (port bentrok + crash loop).
+- *Bagaimana kamu tahu sistemnya sehat?* Dashboard Grafana + 8 alert rule yang dites `promtool` (ADR-014).
 - *Apa yang belum aman?* `docs/security.md` → Known gaps. Menyebutkan kekurangan sendiri menunjukkan kematangan.

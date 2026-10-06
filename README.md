@@ -4,7 +4,7 @@
 
 A self-hosted, Google Drive–style file storage service for one family, built step by step as a cloud-engineering learning project. Every family member has a private drive with a quota, and the family shares common folders. Files live in S3-compatible object storage, metadata in PostgreSQL, and the whole stack runs behind an Nginx reverse proxy with HTTPS, with one `docker compose up`.
 
-> **Status:** Phase 8 of 12 complete. Built and tested locally (Windows + WSL 2); deployment to a home server is planned for Phase 12. See the [roadmap](docs/roadmap.md).
+> **Status:** Phase 9 of 12 complete. Built and tested locally (Windows + WSL 2); deployment to a home server is planned for Phase 12. See the [roadmap](docs/roadmap.md).
 
 ## Highlights
 
@@ -16,7 +16,8 @@ A self-hosted, Google Drive–style file storage service for one family, built s
 - **Database migrations**: Alembic, with every migration reversible and verified in CI (`downgrade base → upgrade head → alembic check`).
 - **Containerized**: Docker Compose with health checks, an init container that runs migrations and creates the bucket before the API starts, a non-root API user, and no database port exposed to the host.
 - **Edge security**: Nginx terminates TLS, redirects HTTP to HTTPS, hides version banners, adds security headers, strips the JWT before proxying to storage, and is the only entry point.
-- **CI/CD (GitHub Actions)**: lint, unit tests against SQLite *and* PostgreSQL, a full-stack smoke test of the real Docker stack, then image publishing to GHCR tagged by commit SHA.
+- **CI/CD (GitHub Actions)**: lint, unit tests against SQLite *and* PostgreSQL, alert-rule unit tests, a full-stack smoke test of the real Docker stack, then image publishing to GHCR tagged by commit SHA.
+- **Monitoring**: Prometheus scrapes the API (HTTP rate, latency, errors plus app metrics such as uploads, logins and per-user quota), PostgreSQL and Silo; a provisioned Grafana dashboard and eight alert rules, all checked by `promtool` tests and in CI.
 
 ## Architecture
 
@@ -30,6 +31,10 @@ flowchart LR
     api -- boto3 / S3 API --> silo
     init[init container<br/>alembic upgrade + create bucket] -.runs once.-> db
     init -.-> silo
+    prom[Prometheus<br/>+ alert rules] -. scrape .-> api
+    prom -. scrape .-> silo
+    prom -. scrape .-> pgexp[postgres-exporter] --> db
+    grafana[Grafana] --> prom
 ```
 
 PostgreSQL stores *who owns what* (users, folders, file names, sizes, content types, ETags). Silo stores only the bytes, under random UUID keys, so renaming or moving a file is a single database update. More detail in [docs/architecture.md](docs/architecture.md).
@@ -44,7 +49,8 @@ PostgreSQL stores *who owns what* (users, folders, file names, sizes, content ty
 | Auth | PyJWT (HS256), pwdlib + Argon2id |
 | Edge | Nginx (TLS 1.2/1.3, HTTP/2) |
 | Containers | Docker, Docker Compose |
-| Quality | pytest, moto (S3 mock), ruff, actionlint |
+| Quality | pytest, moto (S3 mock), ruff, actionlint, shellcheck, promtool |
+| Monitoring | Prometheus, Grafana, postgres-exporter, prometheus-fastapi-instrumentator |
 | CI/CD | GitHub Actions, GitHub Container Registry |
 
 ## Quick start (Docker)
@@ -71,7 +77,7 @@ docker compose up -d --build
 docker compose exec api python create_user.py <username> --admin
 ```
 
-Then open **https://localhost/docs** (accept the self-signed certificate warning), click **Authorize**, and log in. The Silo console for the administrator is at http://127.0.0.1:9001.
+Then open **https://localhost/docs** (accept the self-signed certificate warning), click **Authorize**, and log in. Admin-only consoles listen on the loopback interface only: Grafana at http://127.0.0.1:3000 (user `admin`, password `GRAFANA_ADMIN_PASSWORD`), Prometheus at http://127.0.0.1:9090, Silo at http://127.0.0.1:9001.
 
 Full operating guide, including local development without Docker: [docs/operations.md](docs/operations.md).
 
@@ -99,12 +105,13 @@ ruff check .
 pytest -v                                   # SQLite + mocked S3, ~6 s
 TEST_DATABASE_URL=postgresql+psycopg://... pytest -v   # same tests on PostgreSQL
 bash scripts/smoke_test.sh                  # end-to-end, against a running stack
+bash scripts/monitoring_check.sh            # targets up, alerts loaded, dashboard provisioned
 ```
 
 ```mermaid
 flowchart LR
-    push[git push / PR] --> test["test<br/>ruff · pytest on SQLite · pytest on PostgreSQL"]
-    test --> smoke["smoke<br/>docker compose up · migration roundtrip<br/>· end-to-end upload/download via Nginx"]
+    push[git push / PR] --> test["test<br/>ruff · pytest on SQLite · pytest on PostgreSQL<br/>· promtool config + alert tests"]
+    test --> smoke["smoke<br/>docker compose up · migration roundtrip<br/>· end-to-end upload/download via Nginx<br/>· monitoring check"]
     smoke -->|main branch only| publish["publish<br/>image → ghcr.io, tags latest + sha"]
 ```
 
@@ -123,6 +130,7 @@ The threat model, every control, and the known gaps scheduled for Phase 11 are i
 | [docs/architecture.md](docs/architecture.md) | Components, data model, request flows |
 | [docs/api.md](docs/api.md) | Endpoints, access rules, status codes |
 | [docs/operations.md](docs/operations.md) | Running, administering and troubleshooting the stack |
+| [docs/monitoring.md](docs/monitoring.md) | Metrics, dashboard, alert rules, useful queries |
 | [docs/security.md](docs/security.md) | Threat model, controls, known gaps |
 | [docs/testing-and-ci.md](docs/testing-and-ci.md) | Test strategy and pipeline |
 | [docs/decisions.md](docs/decisions.md) | Architecture decision records |

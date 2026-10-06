@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user
 from config import MAX_UPLOAD_MB, S3_BUCKET
 from database import get_db
+from metrics import DELETES, DOWNLOADS, UPLOAD_BYTES, UPLOADS
 from models import FileRecord, User
 from permissions import get_accessible_folder_or_404, get_own_file, get_readable_file_or_404
 from schemas import FileInfo, FileUpdate, ShareLink
@@ -51,10 +52,12 @@ def upload_file(
 
     size = get_upload_size(file)
     if size > MAX_UPLOAD_BYTES:
+        UPLOADS.labels("too_large").inc()
         raise HTTPException(status_code=413, detail=f"Ukuran file melebihi batas {MAX_UPLOAD_MB} MB")
 
     used, _ = get_storage_usage(db, user.id)
     if used + size > user.quota_bytes:
+        UPLOADS.labels("quota_exceeded").inc()
         raise HTTPException(
             status_code=507,
             detail=f"Kuota tidak cukup: terpakai {used} dari {user.quota_bytes} byte, file ini {size} byte",
@@ -67,7 +70,8 @@ def upload_file(
         )
     )
     if duplicate:
-        raise HTTPException(status_code=409, detail=f"File '{filename}' sudah ada") from None
+        UPLOADS.labels("conflict").inc()
+        raise HTTPException(status_code=409, detail=f"File '{filename}' sudah ada")
 
     object_key = uuid.uuid4().hex
     content_type = file.content_type or "application/octet-stream"
@@ -95,9 +99,12 @@ def upload_file(
     except IntegrityError:
         db.rollback()
         s3.delete_object(Bucket=S3_BUCKET, Key=object_key)
+        UPLOADS.labels("conflict").inc()
         raise HTTPException(status_code=409, detail=f"File '{filename}' sudah ada") from None
 
     db.refresh(record)
+    UPLOADS.labels("success").inc()
+    UPLOAD_BYTES.inc(record.size)
     return record
 
 
@@ -168,6 +175,7 @@ def create_share_link(
     db: Session = Depends(get_db),
 ):
     record = get_readable_file_or_404(db, file_id, user)
+    DOWNLOADS.labels("share_link").inc()
     return ShareLink(
         id=record.id,
         filename=record.filename,
@@ -184,6 +192,7 @@ def download_file(
     db: Session = Depends(get_db),
 ):
     record = get_readable_file_or_404(db, file_id, user)
+    DOWNLOADS.labels("redirect").inc()
     return RedirectResponse(
         create_download_url(record.object_key, record.filename, expires=300),
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
@@ -203,3 +212,4 @@ def delete_file(
     db.commit()
 
     s3.delete_object(Bucket=S3_BUCKET, Key=object_key)
+    DELETES.inc()

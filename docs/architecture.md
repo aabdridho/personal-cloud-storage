@@ -9,15 +9,19 @@
 | `db` | `postgres:18` | Metadata: users, folders, files | No (Docker network only) |
 | `silo` | `pgsty/silo:RELEASE.2026-09-16T00-00-00Z` | S3-compatible object storage for file bytes | Console only, `127.0.0.1:9001` |
 | `init` | built from `Dockerfile` | One-shot: `alembic upgrade head` and create the bucket, then exit | — |
+| `prometheus` | `prom/prometheus:v3.13.4` | Scrapes metrics every 15 s, evaluates alert rules, keeps 30 days | `127.0.0.1:9090` |
+| `postgres-exporter` | `prometheuscommunity/postgres-exporter:v0.20.1` | Translates PostgreSQL statistics into Prometheus metrics | No |
+| `grafana` | `grafana/grafana:13.2.3` | Dashboard, provisioned from files in the repository | `127.0.0.1:3000` |
 
-All services share the Compose network `personal-cloud-storage_default`, where Docker's DNS resolves service names (`db`, `silo`, `api`). Data lives in two named volumes, `pgdata` and `silodata`, so containers can be destroyed and recreated without losing anything.
+All services share the Compose network `personal-cloud-storage_default`, where Docker's DNS resolves service names (`db`, `silo`, `api`). Data lives in named volumes (`pgdata`, `silodata`, plus `promdata` and `grafanadata` for monitoring), so containers can be destroyed and recreated without losing anything.
 
 Start-up order is enforced with health checks: `db` and `silo` must be healthy → `init` must exit with code 0 → `api` starts and must be healthy → `nginx` starts. If a migration fails, the API never starts on a wrong schema.
 
 ## Code layout
 
 ```
-main.py            assembles the app from routers
+main.py            assembles the app from routers, exposes /metrics
+metrics.py         Prometheus counters and the database-backed storage collector
 config.py          reads configuration and secrets from the environment
 database.py        engine, session factory, get_db dependency
 models.py          SQLAlchemy tables: User, Folder, FileRecord
@@ -33,8 +37,9 @@ create_user.py     CLI: create an account
 reset_password.py  CLI: reset a password
 init_storage.py    idempotent bucket creation (used by the init container)
 nginx/default.conf reverse proxy configuration
+monitoring/        Prometheus config + alert rules (+ tests), Grafana provisioning and dashboard
 tests/             pytest suite (SQLite or PostgreSQL + moto S3)
-scripts/           end-to-end smoke test
+scripts/           end-to-end smoke test, monitoring check
 ```
 
 ## Data model

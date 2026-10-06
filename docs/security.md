@@ -49,6 +49,12 @@ The service will hold a family's private photos and documents, so security was d
 - In the native (non-Docker) setup the application connects as `cloud_app`, a login role that owns only its database. In Docker, see the gap below.
 - The storage image is pinned to an exact release; PostgreSQL is pinned to major version 18.
 
+### Monitoring
+
+- `/metrics` is not authenticated, so Nginx answers `404` for it; only Prometheus, inside the Docker network, can read it. Silo's metrics endpoint is public inside the network for the same reason, and Nginx forwards only `/cloud-storage/` to Silo.
+- Prometheus (no authentication of its own) and Grafana listen on `127.0.0.1` only. Grafana has sign-up and anonymous access disabled, its admin password comes from `.env` (Compose refuses to start without it), and telemetry and update checks are off.
+- Metrics contain usernames and storage usage but no file names, tokens or passwords. Dashboards are read-only (provisioned from Git).
+
 ### CI/CD
 
 - The workflow token defaults to `contents: read`; only the publish job gets `packages: write`, and only on pushes to `main`. Pull requests can never publish images.
@@ -67,9 +73,11 @@ The service will hold a family's private photos and documents, so security was d
 | Orphaned objects after partial failures are not swept | Wasted space only (never visible to users) | Periodic job comparing bucket keys with `files.object_key` |
 | Self-signed certificate locally | Browser warning | Real certificate from Cloudflare at deployment (Phase 12) |
 | HSTS disabled | Downgrade on first visit | Enable on the production domain |
+| postgres-exporter connects with the same superuser credentials | Read access is all it needs | Dedicated role with the built-in `pg_monitor` role |
+| Alerts are only displayed, not delivered | Nobody notices an alert while not looking at the dashboard | Alertmanager or Grafana contact point to Telegram/e-mail |
 | Backups | Data loss on disk failure | Phase 10: scheduled PostgreSQL dumps + object replication, tested restore |
 
-Before the service is shared with the family, rotate every credential used during development (admin password, `SILO_ROOT_PASSWORD`, `POSTGRES_PASSWORD`, `JWT_SECRET`), use long random values, and remove or deactivate test accounts.
+Before the service is shared with the family, rotate every credential used during development (admin password, `SILO_ROOT_PASSWORD`, `POSTGRES_PASSWORD`, `JWT_SECRET`, `GRAFANA_ADMIN_PASSWORD`), use long random values, and remove or deactivate test accounts.
 
 ## Reporting
 

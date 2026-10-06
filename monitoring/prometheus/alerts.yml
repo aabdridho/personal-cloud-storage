@@ -1,0 +1,79 @@
+groups:
+  - name: availability
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is down"
+          description: "Prometheus has not been able to scrape {{ $labels.instance }} for 2 minutes."
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is unreachable"
+          description: "postgres-exporter cannot connect to the database."
+
+      - alert: MetricsCollectorCannotReachDatabase
+        expr: pcs_metrics_db_up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API cannot query the database for metrics"
+
+  - name: api
+    rules:
+      - alert: HighServerErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="api", status="5xx"}[5m]))
+            / sum(rate(http_requests_total{job="api"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5% of API requests fail with 5xx"
+
+      - alert: SlowRequests
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="api", handler!="/files"}[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency above 1s (excluding uploads)"
+
+      - alert: LoginFailureSpike
+        expr: increase(pcs_login_attempts_total{result="failure"}[15m]) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 20 failed logins in 15 minutes"
+          description: "Possible password guessing. Check Nginx access logs for the source address."
+
+  - name: storage
+    rules:
+      - alert: UserQuotaAlmostFull
+        expr: pcs_user_used_bytes / pcs_user_quota_bytes > 0.9
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.username }} has used more than 90% of their quota"
+
+      - alert: StorageDiskAlmostFull
+        expr: |
+          minio_cluster_capacity_usable_free_bytes
+            / minio_cluster_capacity_usable_total_bytes < 0.10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Less than 10% free space left on the storage disk"

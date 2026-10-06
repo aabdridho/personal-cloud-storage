@@ -9,7 +9,7 @@ On Windows the reference setup is **Docker Engine inside WSL 2 (Ubuntu)**: run `
 ```bash
 cp .env.example .env                       # then replace every "ganti-saya"
 python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # for JWT_SECRET
-openssl rand -hex 24                       # for POSTGRES_PASSWORD, SILO_ROOT_PASSWORD
+openssl rand -hex 24                       # for POSTGRES_PASSWORD, SILO_ROOT_PASSWORD, GRAFANA_ADMIN_PASSWORD
 
 mkdir -p nginx/certs
 openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
@@ -41,6 +41,8 @@ Rules for `.env`:
 | Validate Nginx config | `docker compose exec nginx nginx -t` |
 | Reload Nginx without downtime | `docker compose exec nginx nginx -s reload` |
 | Restart Nginx after rebuilding `api` | `docker compose restart nginx` |
+| Reload Prometheus after editing its config or rules | `docker compose restart prometheus` |
+| Grafana / Prometheus / Silo consoles | http://127.0.0.1:3000 · http://127.0.0.1:9090 · http://127.0.0.1:9001 |
 
 Nginx resolves `api:8000` once at start-up. After `api` is recreated it may have a new IP, and Nginx answers `502` until it is restarted.
 
@@ -107,7 +109,13 @@ $env:MINIO_ROOT_USER = "..."; $env:MINIO_ROOT_PASSWORD = "..."
 
 Stop the local Uvicorn and Silo before `docker compose up`, because they use the same ports.
 
-## 7. Tests
+## 7. Monitoring
+
+Grafana at http://127.0.0.1:3000 (user `admin`) opens the provisioned **Personal Cloud Storage** dashboard. Prometheus at http://127.0.0.1:9090 shows targets (`/targets`) and alert states (`/alerts`). Metrics, alert rules and PromQL examples: [monitoring.md](monitoring.md).
+
+The dashboard and data source are files in `monitoring/grafana/`, so edits made in the Grafana UI are not saved. Change the JSON in the repository instead, then `docker compose restart grafana`.
+
+## 8. Tests
 
 ```bash
 pip install -r requirements-dev.txt
@@ -115,11 +123,12 @@ ruff check .
 pytest -v
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@127.0.0.1:5432/testdb pytest -v
 bash scripts/smoke_test.sh            # needs the Docker stack running
+bash scripts/monitoring_check.sh      # after the smoke test
 ```
 
 Do not regenerate `requirements.txt` with `pip freeze` from a venv that has the dev tools installed, or pytest, moto and ruff end up in the production image. Add runtime dependencies to `requirements.txt` by hand.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Likely cause | Check / fix |
 |---|---|---|
@@ -133,4 +142,8 @@ Do not regenerate `requirements.txt` with `pip freeze` from a venv that has the 
 | `400 ... multiple authentication types` from storage | JWT forwarded to Silo | Nginx must keep `proxy_set_header Authorization "";` on `/cloud-storage/` |
 | `413` HTML page | Request larger than `client_max_body_size` | Expected; adjust in `nginx/default.conf` and `MAX_UPLOAD_MB` together |
 | `KeyError: 'JWT_SECRET'` (or another variable) at start-up | Variable missing or misspelled in `.env` | List names only: `grep -oE '^[A-Z0-9_]+=' .env` |
+| `required variable GRAFANA_ADMIN_PASSWORD is missing` | `.env` created before Phase 9 | Add `GRAFANA_ADMIN_PASSWORD=<random>` to `.env` |
+| Grafana login rejected after changing `GRAFANA_ADMIN_PASSWORD` | Like PostgreSQL, the password is only applied when the `grafanadata` volume is first created | `docker compose exec grafana grafana cli admin reset-admin-password <new>` |
+| A target is `DOWN` on http://127.0.0.1:9090/targets | Service stopped, or (Silo) `MINIO_PROMETHEUS_AUTH_TYPE` not set | `docker compose ps`, then `docker compose up -d` |
+| Grafana panels say "No data" right after start | Prometheus has not scraped twice yet (rates need two samples) | Wait 30 s and widen the time range |
 | `docker` not found in PowerShell | Docker Engine is installed inside WSL | Run it from the Ubuntu terminal, or `wsl docker ...` |

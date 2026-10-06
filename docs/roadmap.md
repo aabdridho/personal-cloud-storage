@@ -10,7 +10,7 @@
 | 6 | Docker Compose | ✅ | API, PostgreSQL and Silo containers, health checks, init container, volumes, non-root image |
 | 7 | Nginx | ✅ | HTTPS, HTTP→HTTPS redirect, security headers, edge upload limit, single origin for API and storage |
 | 8 | CI/CD | ✅ | ruff, pytest (SQLite + PostgreSQL), full-stack smoke test with migration roundtrip, image publishing to GHCR |
-| 9 | Monitoring | ⏳ | Prometheus metrics, Grafana dashboards, alerts |
+| 9 | Monitoring | ✅ | Prometheus (API, PostgreSQL, Silo), app metrics, provisioned Grafana dashboard, 8 alert rules with `promtool` tests, monitoring check in CI |
 | 10 | Backup & restore | ⏳ | Scheduled PostgreSQL dumps, object replication, tested restore procedure |
 | 11 | Security hardening | ⏳ | Least-privilege storage credentials, non-superuser DB role, login rate limiting, password change, CSP, credential rotation |
 | 12 | Deployment | ⏳ | Home server + Cloudflare Tunnel, real certificate and domain, HSTS, deployment from GHCR by commit SHA |
@@ -33,6 +33,8 @@
 | `398d291` | Private and shared family folders |
 | `dab151c` | Docker Compose |
 | `ed814a2` | Nginx reverse proxy with HTTPS |
+| `5975a08` | CI/CD pipeline, tests, docs (Phase 8) |
+| *(Phase 9)* | Prometheus + Grafana monitoring |
 
 ## Future improvements (beyond Phase 12)
 
@@ -42,4 +44,6 @@
 - Refresh tokens instead of a fixed 60-minute session.
 - Duplicate detection using stored ETags.
 - `naming_convention` on the SQLAlchemy metadata so every constraint is named automatically.
+- Alertmanager to deliver alerts (e.g. to Telegram) instead of only showing them in Prometheus and Grafana.
+- Log aggregation (Loki) next to metrics.
 - Trim `requirements.txt` to direct dependencies plus a lock file.

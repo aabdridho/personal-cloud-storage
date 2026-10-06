@@ -8,7 +8,8 @@ Three layers, each catching what the cheaper one cannot:
 |---|---|---|---|
 | **Lint** | `ruff check .` (pyflakes, pycodestyle, isort, bugbear, pyupgrade; config in `ruff.toml`) | < 1 s | Unused or undefined names, unsorted imports, outdated syntax, swallowed exception context |
 | **Unit/API tests** | `pytest` with FastAPI `TestClient`, S3 mocked by `moto`; run twice in CI, on SQLite and on PostgreSQL | ~6 s each | Regressions in business rules: auth, isolation, quotas, folders, search |
-| **Smoke test** | The real Docker Compose stack (Nginx, API, PostgreSQL, Silo), then `scripts/smoke_test.sh` | 2–3 min | Wiring problems mocks cannot see: TLS, proxy headers, presigned URL signing through Nginx, migrations on a fresh database, container health |
+| **Alert rule tests** | `promtool check config` and `promtool test rules` on synthetic time series | < 1 s | Broken PromQL, alerts that never fire or fire too early |
+| **Smoke test** | The real Docker Compose stack (Nginx, API, PostgreSQL, Silo, monitoring), then `scripts/smoke_test.sh` and `scripts/monitoring_check.sh` | 2–3 min | Wiring problems mocks cannot see: TLS, proxy headers, presigned URL signing through Nginx, migrations on a fresh database, container health |
 
 ## Unit tests (`tests/`)
 
@@ -19,7 +20,7 @@ Three layers, each catching what the cheaper one cannot:
 - Each test gets fresh tables (`autouse` fixture), so tests are independent and can run in any order.
 - Fixtures `admin` and `member` return ready-to-use `Authorization` headers.
 
-What the 15 tests cover:
+What the 19 tests cover (`test_api.py` and `test_metrics.py`):
 
 | Test | Rule protected |
 |---|---|
@@ -38,6 +39,10 @@ What the 15 tests cover:
 | `test_shared_folder_rules` | Members upload into shared folders, others may read (`307`) but not delete (`403`), non-empty folder cannot be deleted (`409`) |
 | `test_private_folder_is_hidden` | Private folder is `404` for others, for both upload and listing |
 | `test_search_escapes_wildcards` | `%` is literal; search is case-insensitive |
+| `test_metrics_endpoint_is_public_inside_the_network` | `/metrics` works and is hidden from the OpenAPI schema |
+| `test_http_requests_are_instrumented` | Requests are counted per route template; `/health` is excluded |
+| `test_upload_and_login_counters` | Upload results, uploaded bytes and failed logins are counted |
+| `test_storage_collector_reads_database` | File count, stored bytes, users and per-user usage come from the database |
 
 Run locally:
 
@@ -62,6 +67,14 @@ Runs against a live stack (`docker compose up -d` first) and fails on the first 
 6. Log in, upload a file, follow the download redirect through Nginx to Silo, and compare the downloaded bytes with the original (`cmp`).
 7. Delete the file (`204`).
 
+## Monitoring check (`scripts/monitoring_check.sh`)
+
+Runs after the smoke test: `/metrics` answers `404` through Nginx; Prometheus is ready and has loaded the alert rules; all four scrape targets (`prometheus`, `api`, `postgres`, `silo`) are up; the smoke test's upload shows up in `pcs_file_uploads_total`; Silo capacity metrics exist; Grafana is healthy, its Prometheus data source answers, the dashboard is provisioned, and anonymous requests get `401`.
+
+## Alert rule tests (`monitoring/prometheus/alerts.test.yml`)
+
+`promtool test rules` feeds synthetic series into the rules and asserts which alerts fire and when: 30 failed logins in 15 minutes fire `LoginFailureSpike`; a user at 95% of quota fires `UserQuotaAlmostFull` while one at 10% does not; `TargetDown` stays silent until the target has been down for the full 2 minutes.
+
 In CI, before the smoke test, the pipeline also runs `alembic downgrade base`, `alembic upgrade head` and `alembic check` inside the container. That proves every migration is reversible and that `models.py` and the migrations describe the same schema.
 
 ## Pipeline (`.github/workflows/ci.yml`)
@@ -70,13 +83,13 @@ In CI, before the smoke test, the pipeline also runs `alembic downgrade base`, `
 flowchart TD
     trigger["push to main · pull request · manual run"] --> test
     subgraph test [job: test]
-        t1[ruff check] --> t2[pytest on SQLite] --> t3[pytest on PostgreSQL service container]
+        t1[ruff check] --> t2[pytest on SQLite] --> t3[pytest on PostgreSQL service container] --> t4[promtool check + rule tests]
     end
     test --> smoke
     subgraph smoke [job: smoke]
         s1[throwaway .env + 1-day certificate] --> s2[docker compose up --build]
-        s2 --> s3[migration roundtrip + alembic check] --> s4[scripts/smoke_test.sh]
-        s4 --> s5[logs on failure · docker compose down -v always]
+        s2 --> s3[migration roundtrip + alembic check] --> s4[scripts/smoke_test.sh] --> s6[scripts/monitoring_check.sh]
+        s6 --> s5[logs on failure · docker compose down -v always]
     end
     smoke -->|push to main only| publish
     subgraph publish [job: publish]
@@ -93,7 +106,9 @@ Design choices:
 - **Concurrency:** a newer push to the same branch cancels the older run.
 - **Caching:** pip downloads are cached by `requirements*.txt`; Docker layers by the GitHub Actions cache.
 
-The workflow file itself is validated with `actionlint`, and the smoke script with `shellcheck`.
+- **Current action versions:** all actions run on the Node 24 runtime (`checkout@v7`, `setup-python@v7`, Docker actions v4–v7), which removed the Node 20 deprecation warnings of the first runs.
+
+The workflow file itself is validated with `actionlint`, and the scripts with `shellcheck`.
 
 ## Adding a feature safely
 
